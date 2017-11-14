@@ -7,7 +7,7 @@ function Operator(el)
   this.hint_el = document.createElement('t'); this.hint_el.id = "hint";
   this.options_el = document.createElement('div'); this.options_el.id = "options"
   this.rune_el = document.createElement('div'); this.rune_el.id = "rune"
-  this.icon_el = document.createElement('img'); this.icon_el.id = "icon" ; this.icon_el.src = "media/content/icon.svg";
+  this.icon_el = document.createElement('img'); this.icon_el.id = "icon" ; this.icon_el.src = "media/content/icon.svg"; this.icon_el.setAttribute("data-operation","clear_filter"); this.icon_el.setAttribute("data-validate","true");
   this.input_wrapper.appendChild(this.input_el);
   this.input_wrapper.appendChild(this.hint_el);
   this.input_wrapper.appendChild(this.rune_el)
@@ -16,6 +16,7 @@ function Operator(el)
   this.el.appendChild(this.options_el)
 
   this.name_pattern = new RegExp(/^@(\w+)/, "i");
+  this.keywords = ["filter","whisper","quote","edit","delete","page","++","--","help"];
 
   this.cmd_history = [];
   this.cmd_index = -1;
@@ -47,17 +48,23 @@ function Operator(el)
 
     this.hint_el.innerHTML = this.autocomplete_words().length > 0 ? this.autocomplete_words()[0] : chars+"C "+words+"W";
     this.hint_el.className = this.autocomplete_words().length > 0 ? "autocomplete" : "";
-    this.rune_el.innerHTML = ">";
-    this.rune_el.className = input.length > 0 ? "input" : "";
 
-    var keywords = ["filter","whisper","quote","edit","delete"]
+    this.rune_el.innerHTML = "";
+    this.rune_el.className = "rune rune-operator";
+    if(this.keywords.indexOf(input.split(" ")[0]) > -1 || input.indexOf(":") > -1){
+      this.rune_el.className += " rune-operator-command";
+    } else if(input.indexOf(">>") > -1){
+      this.rune_el.className += " rune-operator-media";
+    } else {
+      this.rune_el.className += " rune-operator-message";
+    }
 
-    if(keywords.indexOf(input.split(" ")[0]) > -1 || input.indexOf(":") > -1){
-      this.rune_el.innerHTML = "$";
-    }
-    if(input.indexOf(">>") > -1){
-      this.rune_el.innerHTML = "!";
-    }
+    this.rune_el.className += input.length > 0 ? " input" : "";
+  }
+
+  this.update_owner = function(is_owner)
+  {
+    document.body.className = is_owner == false ? "guest" : "owner";
   }
 
   this.validate = function()
@@ -68,16 +75,17 @@ function Operator(el)
     var option = command.indexOf(":") > -1 ? command.split(":")[1] : null;
     command = command.indexOf(":") > -1 ? command.split(":")[0] : command;
 
+    if(!this.commands[command]){
+      command = "say";
+      params = this.input_el.value.trim();
+    }
+
     this.cmd_history.push(this.input_el.value);
     this.cmd_index = -1;
     this.cmd_buffer = "";
 
-    if(this.commands[command]){
-      this.commands[command](params,option);
-    }
-    else{
-      this.commands.say(this.input_el.value.trim());
-    }
+    this.commands[command](params,option);
+
     this.input_el.value = "";
     r.home.feed.refresh(command+" validated");
   }
@@ -100,6 +108,8 @@ function Operator(el)
     // Rich content
     if(message.indexOf(" >> ") > -1){
       // encode the file names to allow for odd characters, like spaces
+      // Encoding the URI needs to happen here.
+      // We can't encode it in entry.rmc as that'd break previously encoded URIs.
       media = encodeURIComponent(message.split(" >> ")[1].trim());
       message = message.split(" >> ")[0].trim();
     }
@@ -159,14 +169,21 @@ function Operator(el)
       console.log("could not find",path)
     }
 
+    for(id in r.home.feed.portals){
+      if (!has_hash(r.home.feed.portals[id], path))
+        continue;
+      r.home.feed.portals.splice(id, 1)[0].badge_remove();
+      break;
+    }
+
     r.home.save();
     r.home.update();
+    r.home.feed.refresh("unfollowing: "+option);
   }
 
   this.commands.dat = function(p,option)
   {
-    option = option.replace("dat://","").replace(/\//g,"").trim();
-    if(option.length != 64){ console.log("Invalid url: ",option); return; }
+    option = to_hash(option);
 
     for(id in r.home.portal.json.port){
       var port_url = r.home.portal.json.port[id];
@@ -175,6 +192,8 @@ function Operator(el)
       }
     }
     r.home.portal.json.port.push("dat://"+option+"/");
+    r.home.feed.queue.push("dat://"+option+"/");
+    r.home.feed.next();
     r.home.save();
     r.home.update();
   }
@@ -187,18 +206,16 @@ function Operator(el)
 
   this.commands.filter = function(p,option)
   {
-    var target = option ? option : "";
+    var target = option || "";
     window.location.hash = target;
     r.home.feed.target = target;
     r.home.feed.el.className = target;
-    r.home.feed.filter = p;
+    r.home.feed.filter = p || "";
   }
 
   this.commands.clear_filter = function()
   {
-    window.location.hash = "";
-    r.home.feed.filter = "";
-    r.home.feed.target = "";
+    r.operator.commands.filter();
   }
 
   this.commands.quote = function(p,option)
@@ -250,10 +267,10 @@ function Operator(el)
   }
 
   this.commands['++'] = function(p, option) {
-    o.commands.page('++');
+    r.operator.commands.page('++');
   }
   this.commands['--'] = function(p, option) {
-    o.commands.page('--');
+    r.operator.commands.page('--');
   }
   this.commands.page = function(p, option) {
     if (p === '' || p == null)
@@ -277,6 +294,48 @@ function Operator(el)
     r.home.feed.page_jump(page);
   }
 
+  this.commands.help = function(p, option) {
+      if (p === '' || p == null)
+        p = option;
+
+      var life = 1500;
+      if (p === '' || p === null) {
+          r.home.log(r.operator.keywords.join(' '), life);
+      } else {
+          var command = p.split(' ')[0];
+          if (command == "filter") {
+              r.home.log('filter:keyword', life);
+          }
+          else if (command == "whisper") {
+              r.home.log('whisper:user_name message', life);
+          }
+          else if (command == "quote") {
+              r.home.log('quote:user_name-id message', life);
+          }
+          else if (command == "media") {
+              r.home.log('message >> media.jpg', life);
+          }
+          else if (command == "edit") {
+              r.home.log('edit:id message', life);
+          }
+          else if (command == "delete") {
+              r.home.log('delete:id', life);
+          }
+          else if (command == "page") {
+              r.home.log('page:page_number', life);
+          }
+          else if (command == "help") {
+              r.home.log('help:command', life);
+          } else {
+              throw new Error('Invalid parameter given for help command!');
+          }
+      }
+  }
+
+  this.commands.discovery_refresh = function(p, option) {
+    r.home.discover();
+  }
+
   this.autocomplete_words = function()
   {
     var words = r.operator.input_el.value.split(" ");
@@ -297,6 +356,8 @@ function Operator(el)
 
   this.key_down = function(e)
   {
+    var scroll = document.body.scrollTop;
+
     if(e.key == "Enter" && !e.shiftKey){
       e.preventDefault();
       r.operator.validate();
@@ -361,6 +422,7 @@ function Operator(el)
     }
 
     r.operator.update();
+    setTimeout(window.scrollTo, 1, 0, scroll);
   }
 
   this.input_changed = function(e)

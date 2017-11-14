@@ -3,18 +3,22 @@ function Portal(url)
   var p = this;
 
   this.url = url;
-  this.hash = to_hash(url);
   this.file = null;
   this.json = null;
   this.archive = new DatArchive(this.url);
+  // Resolve "masked" (f.e. hashbase) dat URLs to "hashed" (dat://0123456789abcdef/) one.
+  DatArchive.resolveName(this.url).then(hash => {
+    if (!hash) return;
+    this.dat = "dat://"+hash+"/";
+  });
 
   this.last_entry = null;
 
   this.badge_element = null;
   this.badge_element_html = null;
 
-    // Cache entries when possible.
-    this.cache_entries = {};
+  // Cache entries when possible.
+  this.cache_entries = {};
 
   this.start = async function()
   {
@@ -27,13 +31,15 @@ function Portal(url)
   this.maintenance = function()
   {
     // Remove portals duplicate
-    var portals = [];
-    for(id in this.json.port){
-      var url = this.json.port[id].replace("dat://","").replace("/","").trim();
-      if(url.length != 64 || portals.indexOf(url) > -1){ continue; }
-      portals.push("dat://"+url+"/")
+    var checked = [];
+    var portals = this.json.port;
+    this.json.port = [];
+    for(id in portals){
+      var hash = to_hash(portals[id]);
+      if(has_hash(checked, hash)){ continue; }
+      checked.push(hash);
+      this.json.port.push("dat://"+hash+"/");
     }
-    this.json.port = portals;
   }
 
   this.connect = async function()
@@ -41,7 +47,7 @@ function Portal(url)
     console.log('connecting to: ', p.url);
 
     try {
-      p.file = await p.archive.readFile('/portal.json', {timeout: 2000});
+      p.file = await promiseTimeout(p.archive.readFile('/portal.json', {timeout: 2000}), 2000);
     } catch (err) {
       console.log('connection failed: ', p.url);
       r.home.feed.next();
@@ -50,7 +56,6 @@ function Portal(url)
 
     try {
       p.json = JSON.parse(p.file);
-      p.url = p.json.dat || p.url;
       r.home.feed.register(p);
     } catch (err) {
       console.log('parsing failed: ', p.url);
@@ -64,7 +69,7 @@ function Portal(url)
     console.log('connecting to: ', p.url);
 
     try {
-      p.file = await p.archive.readFile('/portal.json', {timeout: 2000});
+      p.file = await promiseTimeout(p.archive.readFile('/portal.json', {timeout: 2000}), 2000);
     } catch (err) {
       console.log('connection failed: ', p.url);
       r.home.discover_next();
@@ -86,7 +91,7 @@ function Portal(url)
   {
     try {
       console.log("refreshing: ",p.url)
-      p.file = await p.archive.readFile('/portal.json',{timeout: 1000});
+      p.file = await promiseTimeout(p.archive.readFile('/portal.json',{timeout: 1000}), 1000);
     } catch (err) {
       console.log("connection failed: ",p.url)
       return;
@@ -117,17 +122,12 @@ function Portal(url)
     return e;
   }
 
-  this.relationship = function(target = r.home.url)
+  this.relationship = function(target = r.home.portal.hashes())
   {
-    target = target.replace("dat://","").replace("/","").trim();
+    if (has_hash(this, target)) return create_rune("portal", "self");
+    if (has_hash(this.json.port, target)) return create_rune("portal", "both");
 
-    for(id in this.json.port){
-      var hash = this.json.port[id];
-      if(hash.indexOf(target) > -1){
-        return "@";
-      }
-    }
-    return "~";
+    return create_rune("portal", "follow");
   }
 
   this.updated = function()
@@ -173,6 +173,15 @@ function Portal(url)
     return this.badge_element;
   }
 
+  this.badge_remove = function() {
+    if (this.badge_element == null)
+      return;
+    // Simpler alternative than elem.parentElement.remove(elem);
+    this.badge_element.remove();
+    this.badge_element = null;
+    this.badge_element_html = null;
+  }
+
   this.badge = function(special_class)
   {
     // Avoid 'null' class.
@@ -212,37 +221,53 @@ function Portal(url)
     return "<yu class='badge "+special_class+"' data-operation='"+(special_class === "discovery"?"":"un")+this.url+"'>"+html+"</yu>";
   }
 
+  this.hashes = function()
+  {
+    var hashes = [];
+    hashes.push(to_hash(this.url));
+    hashes.push(to_hash(this.archive.url));
+    hashes.push(to_hash(this.dat));
+    // Remove falsy entries.
+    for (var i = 0; i < hashes.length; i++) {
+      if (!hashes[i]) {
+        hashes.splice(i, 1);
+        i--;
+      }
+    }
+    return hashes;
+  }
+
   this.is_known = function(discovered)
   {
-    var archive_hash = this.archive.url.replace("dat://","").replace("/","").trim();
-    var portal_hash = this.url.replace("dat://","").replace("/","").trim();
-    var dat_hash = this.json.dat && this.json.dat.replace("dat://","").replace("/","").trim();
-
+    var hashes = this.hashes();
     var portals = [].concat(r.home.feed.portals);
     if (discovered)
       portals = portals.concat(r.home.discovered);
 
     for (id in portals) {
       var lookup = portals[id];
-      var lookup_archive_hash = lookup.archive.url.replace("dat://","").replace("/","").trim();
-      var lookup_portal_hash = lookup.url.replace("dat://","").replace("/","").trim();
-      var lookup_dat_hash = lookup.json.dat && lookup.json.dat.replace("dat://","").replace("/","").trim();
-
-      if (lookup_archive_hash === archive_hash) return true;
-      if (lookup_archive_hash === portal_hash) return true;
-      if (lookup_archive_hash === dat_hash && dat_hash) return true;
-      if (lookup_portal_hash === archive_hash) return true;
-      if (lookup_portal_hash === portal_hash) return true;
-      if (lookup_portal_hash === dat_hash && dat_hash) return true;
-      if (lookup_dat_hash) {
-        if (lookup_dat_hash === archive_hash) return true;
-        if (lookup_dat_hash === portal_hash) return true;
-        if (lookup_dat_hash === dat_hash && dat_hash) return true;
-      }
+      if (has_hash(hashes, lookup))
+        return true;
     }
 
     return false;
   }
+}
+
+function promiseTimeout(promise, timeout) {
+  return new Promise((resolve, reject) => {
+    var rejectout = setTimeout(() => reject(new Error("Promise hanging, timeout!")), timeout);
+    promise.then(
+      function() {
+        clearTimeout(rejectout);        
+        resolve.apply(this, arguments);
+      },
+      function() {
+        clearTimeout(rejectout);        
+        reject.apply(this, arguments);
+      }
+    );
+  });
 }
 
 r.confirm("script","portal");

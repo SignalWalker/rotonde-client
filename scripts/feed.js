@@ -7,22 +7,26 @@ function Feed(feed_urls)
 
   this.tab_timeline_el = document.createElement('t'); this.tab_timeline_el.id = "tab_timeline";
   this.tab_mentions_el = document.createElement('t'); this.tab_mentions_el.id = "tab_mentions";
+  this.tab_whispers_el = document.createElement('t'); this.tab_whispers_el.id = "tab_whispers";
   this.tab_portals_el = document.createElement('t'); this.tab_portals_el.id = "tab_portals";
   this.tab_discovery_el = document.createElement('t'); this.tab_discovery_el.id = "tab_discovery";
   this.tab_services_el = document.createElement('t'); this.tab_services_el.id = "tab_services";
 
   this.tab_portals_el.setAttribute("data-operation","filter:portals");
-  this.tab_mentions_el.setAttribute("data-operation","filter:mentions");
-  this.tab_timeline_el.setAttribute("data-operation","clear_filter");
-  this.tab_discovery_el.setAttribute('data-operation', 'filter:discovery');
   this.tab_portals_el.setAttribute("data-validate","true");
+  this.tab_mentions_el.setAttribute("data-operation","filter:mentions");
   this.tab_mentions_el.setAttribute("data-validate","true");
+  this.tab_whispers_el.setAttribute("data-operation","filter:whispers");
+  this.tab_whispers_el.setAttribute("data-validate","true");
+  this.tab_timeline_el.setAttribute("data-operation","clear_filter");
   this.tab_timeline_el.setAttribute("data-validate","true");
+  this.tab_discovery_el.setAttribute('data-operation', 'filter:discovery');
   this.tab_discovery_el.setAttribute('data-validate', "true");
   
   this.el.appendChild(this.tabs_el);
   this.tabs_el.appendChild(this.tab_timeline_el);
   this.tabs_el.appendChild(this.tab_mentions_el);
+  this.tabs_el.appendChild(this.tab_whispers_el);
   this.tabs_el.appendChild(this.tab_portals_el);
   this.tabs_el.appendChild(this.tab_discovery_el);
   this.tabs_el.appendChild(this.tab_services_el);
@@ -58,8 +62,8 @@ function Feed(feed_urls)
 
   this.start = function()
   {
-    this.queue.push(r.home.portal.url);
-    for(id in r.home.portal.json.port){
+    this.queue.push(r.home.portal.url);
+    for(id in r.home.portal.json.port){
       var url = r.home.portal.json.port[id];
       this.queue.push(url)
     }
@@ -68,12 +72,9 @@ function Feed(feed_urls)
     this.timer = setInterval(r.home.feed.next, 500);
   }
 
-  this.last_update = Date.now();
-
   this.next = async function()
   {
     if(r.home.feed.queue.length < 1){ console.log("Reached end of queue"); r.home.feed.update_log(); return; }
-    if(Date.now() - r.home.feed.last_update < 250){ return; }
 
     var url = r.home.feed.queue[0];
 
@@ -82,12 +83,22 @@ function Feed(feed_urls)
     var portal = new Portal(url);
     portal.connect()
     r.home.feed.update_log();
-    r.home.feed.last_update = Date.now();
   }
 
   this.register = async function(portal)
   {
     console.info("connected to ",portal.json.name,this.portals.length+"|"+this.queue.length);
+
+    // Fix the URL of the registered portal.
+    for (var id = 0; id < r.home.portal.json.port.length; id++) {
+      var port_url = r.home.portal.json.port[id];
+      if (port_url != portal.url) continue;
+      port_url = portal.archive.url || portal.url;
+      if (!port_url.replace("dat://", "").indexOf("/") > -1)
+        port_url = port_url + "/";
+      r.home.portal.json.port[id] = port_url;
+      break;
+    }
 
     this.portals.push(portal);
     var activity = portal.archive.createFileActivityStream("portal.json");
@@ -130,11 +141,23 @@ function Feed(feed_urls)
   {
     r.home.feed.page = page;
     r.home.update();
-    await r.home.feed.refresh('page jump ' + f.page);
+    await r.home.feed.refresh('page jump ' + r.home.feed.page);
   }
 
   this.refresh = function(why)
   {
+    if (why && why.startsWith("delay: ")) {
+      why = why.replace("delay: ", "");
+      // Delay the refresh to occur again after all portals refreshed.
+      setTimeout(async function() {
+        for (var id in r.home.feed.portals) {
+          var portal = r.home.feed.portals[id];
+          await portal.refresh();
+        }
+        r.home.feed.refresh('delayed: ' + why);
+      }, 250);
+      return;
+    }    
     if(!why) { console.error("unjustified refresh"); }
     console.log("refreshing feed…", "#" + r.home.feed.target, "→"+why);
 
@@ -147,15 +170,14 @@ function Feed(feed_urls)
     this.page_filter = r.home.feed.filter;
 
     var entries = [];
-    this.mentions = 0;
 
     for(id in r.home.feed.portals){
       var portal = r.home.feed.portals[id];
       entries = entries.concat(portal.entries())
     }
 
-    this.mentions = entries.filter(function (e) { return e.is_mention }).length
-    if(this.mentions > 0) { console.log("we got mentioned!","×"+this.mentions); }
+    this.mentions = entries.filter(function (e) { return e.is_visible("", "mentions") }).length
+    this.whispers = entries.filter(function (e) { return e.is_visible("", "whispers") }).length
 
     var sorted_entries = entries.sort(function (a, b) {
       return a.timestamp < b.timestamp ? 1 : -1;
@@ -221,10 +243,12 @@ function Feed(feed_urls)
 
     r.home.feed.tab_timeline_el.innerHTML = entries.length+" Entries";
     r.home.feed.tab_mentions_el.innerHTML = this.mentions+" Mention"+(this.mentions == 1 ? '' : 's')+"";
+    r.home.feed.tab_whispers_el.innerHTML = this.whispers+" Whisper"+(this.whispers == 1 ? '' : 's')+"";
     r.home.feed.tab_portals_el.innerHTML = r.home.feed.portals.length+" Portal"+(r.home.feed.portals.length == 1 ? '' : 's')+"";
-    r.home.feed.tab_discovery_el.innerHTML = r.home.discovered_count+"/"+r.home.network.length+" Network"+(r.home.network.length == 1 ? '' : 's')+"";
+    r.home.feed.tab_discovery_el.innerHTML = (r.home.discovery_enabled?r.home.discovered_count+"/":"")+r.home.network.length+" Network"+(r.home.network.length == 1 ? '' : 's')+"";
 
     r.home.feed.tab_mentions_el.className = r.home.feed.target == "mentions" ? "active" : "";
+    r.home.feed.tab_whispers_el.className = r.home.feed.target == "whispers" ? "active" : "";
     r.home.feed.tab_portals_el.className = r.home.feed.target == "portals" ? "active" : "";
     r.home.feed.tab_discovery_el.className = r.home.feed.target == "discovery" ? "active" : "";
     r.home.feed.tab_timeline_el.className = r.home.feed.target == "" ? "active" : "";
@@ -233,7 +257,50 @@ function Feed(feed_urls)
 
 function to_hash(url)
 {
-  return url.replace("dat://","").replace("/","").trim();
+  if (!url)
+    return null;
+
+  if (url.startsWith("//"))
+    url = url.substring(2);
+
+  url = url.replace("dat://", "");
+
+  var index = url.indexOf("/");
+  url = index == -1 ? url : url.substring(0, index);
+
+  url = url.toLowerCase().trim();
+  return url;
+}
+
+function has_hash(hashes_a, hashes_b)
+{
+  // Passed a portal (or something giving hashes) as hashes_a or hashes_b.
+  if (hashes_a && typeof(hashes_a.hashes) == "function")
+    hashes_a = hashes_a.hashes();
+  if (hashes_b && typeof(hashes_b.hashes) == "function")
+    hashes_b = hashes_b.hashes();
+
+  // Passed a single url or hash as hashes_b. Let's support it for convenience.
+  if (typeof(hashes_b) == "string")
+    return hashes_a.findIndex(hash_a => to_hash(hash_a) == to_hash(hashes_b)) > -1;
+  
+  for (var a in hashes_a) {
+    var hash_a = to_hash(hashes_a[a]);
+    if (!hash_a)
+      continue;
+
+    for (var b in hashes_b) {
+      var hash_b = to_hash(hashes_b[b]);
+      if (!hash_b)
+        continue;
+
+      if (hash_a == hash_b)
+        return true;
+    }
+
+  }
+
+  return false;
 }
 
 function portal_from_hash(url)
@@ -241,12 +308,19 @@ function portal_from_hash(url)
   var hash = to_hash(url);
 
   for(id in r.home.feed.portals){
-    if(hash == to_hash(r.home.feed.portals[id].url)){ return "@"+r.home.feed.portals[id].json.name; }
+    if(has_hash(r.home.feed.portals[id], hash)){ return "@"+r.home.feed.portals[id].json.name; }
   }
-  if(hash == to_hash(r.home.portal.hash)){
+  if(has_hash(r.home.portal, hash)){
     return "@"+r.home.portal.json.name;
   }
   return hash.substr(0,12)+".."+hash.substr(hash.length-3,2);
+}
+
+function create_rune(context, type)
+{
+  context = r.escape_attr(context);
+  type = r.escape_attr(type);
+  return `<i class='rune rune-${context} rune-${context}-${type}'></i>`;
 }
 
 r.confirm("script","feed");
